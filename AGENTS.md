@@ -37,3 +37,13 @@
 - No unsolicited refactors
 - No "while I'm in here" changes
 - If something looks wrong but wasn't asked about — flag it, don't fix it silently
+
+## Claude Code Delegation
+- Any task involving writing, fixing, or running code → delegate to Claude Code
+- Command: `claude --dangerously-skip-permissions -p "exact task"`
+- If Claude Code errors → report error + stop. Never substitute manual coding.
+
+## Tool Failure Protocol
+- If any tool fails (browser, API, Claude Code) → report what failed and what Curt needs to do
+- Never silently try a different approach
+- Never substitute browser for API or vice versa
