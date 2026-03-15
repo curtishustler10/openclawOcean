@@ -21,6 +21,18 @@
         .service-details { color: #666; font-size: 13px; }
         .service-price { color: #C9A84C; font-weight: 600; }
         .date-time-group { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .calendar-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+        .calendar-nav button { background: none; border: 1px solid #ddd; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 16px; color: #333; transition: border-color 0.2s; }
+        .calendar-nav button:hover:not(:disabled) { border-color: #C9A84C; color: #C9A84C; }
+        .calendar-nav button:disabled { opacity: 0.3; cursor: not-allowed; }
+        .calendar-range { font-size: 14px; font-weight: 500; color: #333; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+        .calendar-day-label { text-align: center; font-size: 11px; color: #999; padding: 4px 0; font-weight: 500; }
+        .calendar-day { text-align: center; padding: 8px 4px; border: 1px solid #eee; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+        .calendar-day:hover:not(.disabled) { border-color: #C9A84C; background: #fdf8f0; }
+        .calendar-day.selected { background: #C9A84C; color: #fff; border-color: #C9A84C; }
+        .calendar-day.today { border-color: #C9A84C; font-weight: 700; }
+        .calendar-day.disabled { color: #ccc; cursor: not-allowed; background: #fafafa; }
         .submit-btn { width: 100%; padding: 14px; background: #C9A84C; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.3s; }
         .submit-btn:hover { background: #b8973f; }
         .submit-btn:disabled { background: #ccc; cursor: not-allowed; }
@@ -63,17 +75,24 @@
             </div>
             
             <!-- Step 3: Date & Time -->
-            <div class="date-time-group">
-                <div class="form-group">
-                    <label>Date</label>
-                    <input type="date" id="bookingDate" required>
+            <div class="form-group">
+                <label>Date</label>
+                <div class="calendar-nav">
+                    <button type="button" id="prevWeeks">&#8249;</button>
+                    <span class="calendar-range" id="calendarRange"></span>
+                    <button type="button" id="nextWeeks">&#8250;</button>
                 </div>
-                <div class="form-group">
-                    <label>Time</label>
-                    <select id="bookingTime" required>
-                        <option value="">Select time</option>
-                    </select>
-                </div>
+                <div class="calendar-grid" id="calendarDayLabels"></div>
+                <div class="calendar-grid" id="calendarWeek1"></div>
+                <div class="calendar-grid" id="calendarWeek2"></div>
+                <input type="hidden" id="bookingDate" required>
+                <div class="error-message" id="dateError"></div>
+            </div>
+            <div class="form-group">
+                <label>Time</label>
+                <select id="bookingTime" required>
+                    <option value="">Select time</option>
+                </select>
             </div>
             
             <button type="submit" class="submit-btn" id="submitBtn">Book Now</button>
@@ -104,10 +123,10 @@
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             renderServices();
-            setupDatePicker();
+            setupCalendar();
             setupForm();
         });
-        
+
         function renderServices() {
             const container = document.getElementById('servicesList');
             container.innerHTML = SERVICES.map(s => `
@@ -120,7 +139,7 @@
                 </div>
             `).join('');
         }
-        
+
         function selectService(id) {
             document.querySelectorAll('.service-option').forEach(el => el.classList.remove('selected'));
             document.querySelector(`[data-id="${id}"]`).classList.add('selected');
@@ -128,43 +147,123 @@
             document.getElementById('serviceError').textContent = '';
             updateTimeSlots();
         }
-        
-        function setupDatePicker() {
-            const dateInput = document.getElementById('bookingDate');
-            const today = new Date();
-            const maxDate = new Date();
-            maxDate.setMonth(maxDate.getMonth() + 2);
-            
-            dateInput.min = today.toISOString().split('T')[0];
-            dateInput.max = maxDate.toISOString().split('T')[0];
-            dateInput.addEventListener('change', updateTimeSlots);
+
+        // Calendar: shows 2 weeks at a time, prev/next move by 14 days
+        let calendarStart = null; // Monday of the current 2-week window
+
+        function toDateStr(d) {
+            return d.toISOString().split('T')[0];
         }
-        
+
+        function getMonday(d) {
+            const day = d.getDay(); // 0=Sun
+            const diff = (day === 0 ? -6 : 1 - day);
+            const mon = new Date(d);
+            mon.setDate(d.getDate() + diff);
+            mon.setHours(0, 0, 0, 0);
+            return mon;
+        }
+
+        function setupCalendar() {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            calendarStart = getMonday(today);
+
+            const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+            const labelsEl = document.getElementById('calendarDayLabels');
+            labelsEl.innerHTML = DAY_LABELS.map(d => `<div class="calendar-day-label">${d}</div>`).join('');
+
+            document.getElementById('prevWeeks').addEventListener('click', () => {
+                calendarStart = new Date(calendarStart);
+                calendarStart.setDate(calendarStart.getDate() - 14);
+                renderCalendar();
+            });
+            document.getElementById('nextWeeks').addEventListener('click', () => {
+                calendarStart = new Date(calendarStart);
+                calendarStart.setDate(calendarStart.getDate() + 14);
+                renderCalendar();
+            });
+
+            renderCalendar();
+        }
+
+        function renderCalendar() {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const maxDate = new Date(today);
+            maxDate.setMonth(maxDate.getMonth() + 2);
+
+            // Range label
+            const endDate = new Date(calendarStart);
+            endDate.setDate(calendarStart.getDate() + 13);
+            const fmt = { month: 'short', day: 'numeric' };
+            const startLabel = calendarStart.toLocaleDateString('en-AU', fmt);
+            const endLabel = endDate.toLocaleDateString('en-AU', { ...fmt, year: 'numeric' });
+            document.getElementById('calendarRange').textContent = `${startLabel} – ${endLabel}`;
+
+            // Prev arrow: disable if moving back would go entirely before today
+            const prevStart = new Date(calendarStart);
+            prevStart.setDate(calendarStart.getDate() - 14);
+            const prevEnd = new Date(prevStart);
+            prevEnd.setDate(prevStart.getDate() + 13);
+            document.getElementById('prevWeeks').disabled = prevEnd < today;
+
+            // Next arrow: disable if already past max
+            const nextStart = new Date(calendarStart);
+            nextStart.setDate(calendarStart.getDate() + 14);
+            document.getElementById('nextWeeks').disabled = nextStart > maxDate;
+
+            // Render 2 rows of 7
+            const selectedDate = document.getElementById('bookingDate').value;
+            ['calendarWeek1', 'calendarWeek2'].forEach((id, weekIdx) => {
+                const el = document.getElementById(id);
+                let html = '';
+                for (let i = 0; i < 7; i++) {
+                    const d = new Date(calendarStart);
+                    d.setDate(calendarStart.getDate() + weekIdx * 7 + i);
+                    const dStr = toDateStr(d);
+                    const isDisabled = d < today || d > maxDate;
+                    const isSelected = dStr === selectedDate;
+                    const isToday = dStr === toDateStr(today);
+                    let cls = 'calendar-day';
+                    if (isDisabled) cls += ' disabled';
+                    else if (isSelected) cls += ' selected';
+                    else if (isToday) cls += ' today';
+                    const clickHandler = isDisabled ? '' : `onclick="selectDate('${dStr}')"`;
+                    html += `<div class="${cls}" ${clickHandler}>${d.getDate()}</div>`;
+                }
+                el.innerHTML = html;
+            });
+        }
+
+        function selectDate(dateStr) {
+            document.getElementById('bookingDate').value = dateStr;
+            document.getElementById('dateError').textContent = '';
+            renderCalendar();
+            updateTimeSlots();
+        }
+
         function updateTimeSlots() {
             const select = document.getElementById('bookingTime');
             const date = document.getElementById('bookingDate').value;
-            
             if (!date) return;
-            
-            // Generate time slots (8am - 6pm)
             const slots = [];
             for (let hour = 8; hour < 18; hour++) {
                 slots.push(`${hour.toString().padStart(2, '0')}:00`);
-                if (hour < 18) slots.push(`${hour.toString().padStart(2, '0')}:30`);
+                slots.push(`${hour.toString().padStart(2, '0')}:30`);
             }
-            
-            select.innerHTML = '<option value="">Select time</option>' + 
+            select.innerHTML = '<option value="">Select time</option>' +
                 slots.map(t => `<option value="${t}">${t}</option>`).join('');
         }
-        
+
         function setupForm() {
             document.getElementById('bookingForm').addEventListener('submit', async (e) => {
                 e.preventDefault();
-                
+
                 const btn = document.getElementById('submitBtn');
                 btn.disabled = true;
                 btn.textContent = 'Booking...';
-                
+
                 const serviceId = document.getElementById('selectedService').value;
                 if (!serviceId) {
                     document.getElementById('serviceError').textContent = 'Please select a service';
@@ -172,11 +271,18 @@
                     btn.textContent = 'Book Now';
                     return;
                 }
-                
-                const service = SERVICES.find(s => s.id === parseInt(serviceId));
+
                 const date = document.getElementById('bookingDate').value;
+                if (!date) {
+                    document.getElementById('dateError').textContent = 'Please select a date';
+                    btn.disabled = false;
+                    btn.textContent = 'Book Now';
+                    return;
+                }
+
+                const service = SERVICES.find(s => s.id === parseInt(serviceId));
                 const time = document.getElementById('bookingTime').value;
-                
+
                 const bookingData = {
                     name: document.getElementById('customerName').value,
                     email: document.getElementById('customerEmail').value,
@@ -187,7 +293,7 @@
                     date_time: `${date}T${time}:00`,
                     duration: service.duration
                 };
-                
+
                 try {
                     // In production, replace with your actual webhook URL
                     // await fetch(API_URL, {
@@ -195,11 +301,11 @@
                     //     headers: { 'Content-Type': 'application/json' },
                     //     body: JSON.stringify(bookingData)
                     // });
-                    
+
                     // Show success for demo
                     document.getElementById('bookingForm').style.display = 'none';
                     document.getElementById('successMessage').style.display = 'block';
-                    
+
                 } catch (error) {
                     document.getElementById('serviceError').textContent = 'Booking failed. Please try again.';
                     btn.disabled = false;
