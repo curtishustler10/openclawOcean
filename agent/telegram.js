@@ -56,21 +56,18 @@ export function startTelegramBot({ onTask } = {}) {
     generateSelfSignedCert(host);
   }
 
-  const cert = readFileSync(CERT_FILE);
-  const key  = readFileSync(KEY_FILE);
   const webhookUrl = `https://${host}:${webhookPort}`;
 
   bot = new TelegramBot(config.telegramToken, {
     webHook: {
       port: webhookPort,
-      key,
-      cert,
-      autoOpen: true,
+      key: KEY_FILE,   // node-telegram-bot-api expects file paths, not buffers
+      cert: CERT_FILE,
     },
   });
 
   // Register webhook with Telegram (sends our cert so Telegram trusts it)
-  bot.setWebHook(`${webhookUrl}/bot${config.telegramToken}`, { certificate: cert })
+  bot.setWebHook(`${webhookUrl}/bot${config.telegramToken}`, { certificate: readFileSync(CERT_FILE) })
     .then(() => console.error(`[telegram] Webhook registered: ${webhookUrl}`))
     .catch(err => console.error('[telegram] Webhook registration failed:', err.message));
 
