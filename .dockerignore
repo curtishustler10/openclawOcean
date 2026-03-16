@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Node
+node_modules
+npm-debug.log
+
+# Env (never bake into image)
+.env
+
+# Queue state (runtime data — mount as volume)
+agent/queue.json
+
+# Dev / local tools
+tools/
+.openclaw/
+
+# Secrets / creds
+**/*.pem
+**/*.key
+**/*.p12

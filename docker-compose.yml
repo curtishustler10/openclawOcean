@@ -1,0 +1,44 @@
+services:
+  axis-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: axis-agent:latest
+    container_name: axis-agent
+    restart: always
+    ports:
+      - "3000:3000"
+
+    # Mount workspace so SOUL.md, MEMORY.md, memory/ etc. are accessible
+    # and persist across container restarts/rebuilds
+    volumes:
+      - .:/workspace:rw
+      - agent-queue:/app/queue.json
+
+    # Load .env from workspace root
+    env_file:
+      - .env
+
+    environment:
+      - NODE_ENV=production
+      - WORKSPACE_DIR=/workspace
+      - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+      - PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+
+    # Add capabilities needed for Chromium in --no-sandbox mode
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+
+    # Memory limit — 1GB is comfortable for the agent + browser
+    mem_limit: 1g
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  agent-queue:

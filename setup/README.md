@@ -1,72 +1,167 @@
 # AXIS Agent Server — Setup Guide
 
-## What this is
+Three deployment options, from simplest to most production-grade:
 
-A self-hosted autonomous AI agent server with:
-- **REST API** (`POST /task`) to submit tasks programmatically
-- **Telegram bot** to submit tasks from your phone
-- **MCP tools**: shell execution, filesystem, browser automation, memory R/W
-- **Model routing** to optimise cost vs capability per task type
-- **Persistent task queue** backed to disk
-
-## Prerequisites
-
-- Ubuntu 22.04 or 24.04 LTS
-- Fresh DigitalOcean droplet (minimum: 2 vCPU / 2GB RAM / 25GB SSD)
-- Your Anthropic API key
-- (Optional) Claude Code CLI installed on the droplet for coding tasks
+| Option | How | Best for |
+|--------|-----|---------|
+| **A — Cloud-Init** | Paste `cloud-init.yml` into DO droplet user-data | Quickest start, no tools needed |
+| **B — Packer snapshot** | Build a DO image once, spin up unlimited droplets from it | Repeatable, fastest boot |
+| **C — Docker** | Run containerised via `docker-compose up` | Local dev or Docker-preferred hosts |
 
 ---
 
-## Install
+## Option A — Cloud-Init (Quickest)
 
-### Option A — One-liner on fresh droplet
+No tools needed. AXIS installs itself on first boot.
 
+1. Go to **DigitalOcean → Create Droplet**
+2. Choose: **Ubuntu 22.04 LTS**, region `Sydney (SYD1)`, size `2 vCPU / 2GB`
+3. Expand **Advanced Options → Add Initialization scripts (User Data)**
+4. Paste the full contents of `setup/cloud-init.yml`
+5. Create the droplet — setup runs automatically (~5 min)
+
+Then:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/curtishustler10/openclawOcean/claude/ai-agent-server-plan-4k5o2/setup/install.sh | sudo bash
+ssh root@<droplet-ip>
+su - axis
+
+# Add your API keys
+nano /home/axis/openclawOcean/.env
+
+# Start AXIS
+bash /home/axis/START.sh
 ```
 
-### Option B — Manual
+---
 
+## Option B — Packer Snapshot (Recommended for scale)
+
+Builds a reusable DigitalOcean image. Spin up new droplets from it in seconds with zero setup.
+
+### Prerequisites
 ```bash
-# 1. Clone the repo
+# Install Packer (macOS)
+brew tap hashicorp/tap && brew install hashicorp/tap/packer
+
+# Install Packer (Linux)
+curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/hashicorp.list
+apt-get update && apt-get install packer
+```
+
+### Build the snapshot
+```bash
+# Get a DO Personal Access Token from:
+# digitalocean.com → API → Generate New Token (read+write)
+export DIGITALOCEAN_TOKEN=dop_v1_your_token_here
+
+# (Optional) Override branch
+export AXIS_REPO_BRANCH=claude/ai-agent-server-plan-4k5o2
+
+cd /path/to/openclawOcean
+
+# Init + build (~8-12 min)
+packer init setup/packer.pkr.hcl
+packer build setup/packer.pkr.hcl
+```
+
+Packer will:
+1. Create a temporary `s-2vcpu-2gb` droplet in Sydney
+2. Install Node.js 20, Claude Code CLI, all dependencies, Playwright Chromium
+3. Clone the repo, install npm deps, register systemd service
+4. Take a snapshot named `axis-agent-<timestamp>`
+5. Destroy the temporary droplet
+
+The snapshot appears in your DO account under **Images → Snapshots**.
+
+### Spin up a droplet from the snapshot
+```bash
+# Via DO CLI (doctl)
+doctl compute droplet create axis-prod \
+  --image axis-agent-<timestamp> \
+  --size s-2vcpu-4gb \
+  --region syd1 \
+  --ssh-keys <your-key-fingerprint>
+
+# Or via the web console:
+# Manage → Backups & Snapshots → Snapshots → select image → Create Droplet
+```
+
+### First run after boot
+```bash
+ssh root@<new-droplet-ip>
+su - axis
+nano /home/axis/openclawOcean/.env   # Add API keys
+bash /home/axis/START.sh             # Starts AXIS
+```
+
+---
+
+## Option C — Docker
+
+### Requirements
+- Docker + Docker Compose on any Ubuntu droplet
+- Droplet size: 1 vCPU / 1GB RAM minimum (2GB recommended)
+
+### Install Docker on droplet
+```bash
+curl -fsSL https://get.docker.com | bash
+usermod -aG docker $USER
+```
+
+### Deploy
+```bash
 git clone -b claude/ai-agent-server-plan-4k5o2 https://github.com/curtishustler10/openclawOcean.git
 cd openclawOcean
 
-# 2. Run installer
-sudo bash setup/install.sh
+# Add API keys
+cp .env.example .env
+nano .env
+
+# Build and start (first run ~3 min)
+docker compose up -d
+
+# Logs
+docker compose logs -f
+
+# Update to latest
+git pull && docker compose up -d --build
+```
+
+### Build and push to DigitalOcean Container Registry (optional)
+```bash
+# Create registry at: digitalocean.com → Container Registry
+doctl registry login
+
+docker build -t registry.digitalocean.com/your-registry/axis-agent:latest .
+docker push registry.digitalocean.com/your-registry/axis-agent:latest
 ```
 
 ---
 
-## Configuration
+## Configuration (.env)
 
-After install, edit `/home/axis/openclawOcean/.env`:
+Minimum required in all options:
 
 ```bash
-sudo nano /home/axis/openclawOcean/.env
-```
-
-Minimum required:
-```
 ANTHROPIC_API_KEY=sk-ant-...
 TELEGRAM_BOT_TOKEN=8638578625:AAGDlsocxSplP0nvIBmz5t2ia9Cq1QE0C_8
-TELEGRAM_CHAT_ID=<your chat ID from @userinfobot>
+TELEGRAM_CHAT_ID=   # Get from @userinfobot on Telegram
 ```
+
+Full model routing config: see `.env.example`
 
 ---
 
 ## Model Routing
 
-Tasks are automatically classified and routed:
+| Task | Route | Cost |
+|------|-------|------|
+| Conversational / admin | `claude-haiku-4-5` (cheap) | ~$0.001 |
+| Coding / debugging | Claude Code CLI | low |
+| Complex reasoning | `claude-sonnet-4-6` | ~$0.01 |
 
-| Task type | Model | Cost |
-|-----------|-------|------|
-| Conversational / admin | `claude-haiku-4-5` | ~$0.001 |
-| Coding / debugging | Claude Code CLI | $0 (uses your API key directly) |
-| Complex reasoning / analysis | `claude-sonnet-4-6` | ~$0.01 |
-
-To use a different cheap provider (e.g. Gemini Flash via OpenRouter):
+To use a different cheap provider (Gemini, OpenRouter, local LiteLLM):
 ```
 CHEAP_MODEL=google/gemini-flash-1.5
 CHEAP_BASE_URL=https://openrouter.ai/api/v1
@@ -75,87 +170,31 @@ CHEAP_API_KEY=sk-or-...
 
 ---
 
-## Start / Stop
+## Usage after deploy
 
+### Telegram
+Message your bot (@Openclaw88axisbot) — tasks run and results come back automatically.
+
+Commands: `/status` `/tasks` `/cancel <id>`
+
+### REST API
 ```bash
-# Start
-systemctl start axis-agent
-
-# Stop
-systemctl stop axis-agent
-
-# Restart
-systemctl restart axis-agent
-
-# Logs
-journalctl -u axis-agent -f
-```
-
----
-
-## Usage
-
-### Via Telegram
-Just message your bot. Results come back automatically.
-
-Commands:
-- `/status` — show running tasks
-- `/tasks` — list recent 10 tasks
-- `/cancel <id>` — cancel a pending task
-
-### Via REST API
-
-```bash
-# Submit a task
-curl -X POST http://<droplet-ip>:3000/task \
+# Submit task
+curl -X POST http://<ip>:3000/task \
   -H 'Content-Type: application/json' \
-  -d '{"prompt": "List all files in the workspace"}'
-# → {"id": "abc123...", "status": "pending"}
+  -d '{"prompt": "Check what files changed in git today"}'
 
-# Check status
-curl http://<droplet-ip>:3000/task/abc123
+# Poll result
+curl http://<ip>:3000/task/<id>
 
-# List all tasks
-curl http://<droplet-ip>:3000/tasks
+# List all
+curl http://<ip>:3000/tasks
 ```
 
----
-
-## MCP Tools Available
-
-| Tool | Description |
-|------|-------------|
-| `bash_exec` | Run any shell command |
-| `read_file` | Read any file |
-| `write_file` | Write any file |
-| `list_dir` | List directory contents |
-| `delete_path` | Delete file/directory |
-| `move_path` | Move/rename file |
-| `browser_goto` | Navigate to URL |
-| `browser_screenshot` | Capture screenshot |
-| `browser_click` | Click element |
-| `browser_type` | Type into input |
-| `browser_get_text` | Extract page text |
-| `browser_get_html` | Get page HTML |
-| `browser_evaluate` | Run JavaScript in browser |
-| `browser_wait` | Wait for selector/time |
-| `browser_close` | Close browser |
-| `memory_read` | Read a workspace memory file |
-| `memory_write` | Write a memory file |
-| `memory_append` | Append to a memory file |
-| `memory_list` | List memory files |
-| `memory_log_session` | Log a session entry |
-
----
-
-## Firewall
-
-Port `3000` is opened automatically by the installer (via UFW).
-To restrict API access to specific IPs:
-
+### Manage the service
 ```bash
-ufw delete allow 3000/tcp
-ufw allow from <your-ip> to any port 3000
+systemctl start|stop|restart axis-agent
+journalctl -u axis-agent -f        # live logs
 ```
 
 ---
@@ -164,7 +203,7 @@ ufw allow from <your-ip> to any port 3000
 
 ```bash
 cd /home/axis/openclawOcean
-sudo -u axis git pull origin claude/ai-agent-server-plan-4k5o2
-cd agent && sudo -u axis npm install
-sudo systemctl restart axis-agent
+git pull origin claude/ai-agent-server-plan-4k5o2
+cd agent && npm install --omit=dev
+systemctl restart axis-agent
 ```

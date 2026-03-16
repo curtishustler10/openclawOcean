@@ -1,12 +1,40 @@
 /**
- * telegram.js — Telegram bot for task submission and result delivery
+ * telegram.js — Telegram bot in WEBHOOK mode
+ *
+ * Telegram pushes updates to us (no outbound polling, avoids firewall issues).
+ * Uses self-signed SSL cert — auto-generated on first start.
+ * Listens on port 8443 (Telegram-approved port for webhooks).
+ *
+ * Requires in .env:
+ *   PUBLIC_IP or PUBLIC_DOMAIN — droplet's public IP or domain
+ *   WEBHOOK_PORT               — default 8443
  */
 
 import TelegramBot from 'node-telegram-bot-api';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
+import { execSync } from 'child_process';
+import { join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { config } from './config.js';
-import { addTask, getTask, listTasks, cancelTask } from './queue.js';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const CERT_DIR = join(__dirname, 'certs');
+const CERT_FILE = join(CERT_DIR, 'cert.pem');
+const KEY_FILE  = join(CERT_DIR, 'key.pem');
 
 let bot = null;
+
+function generateSelfSignedCert(host) {
+  mkdirSync(CERT_DIR, { recursive: true });
+  console.error(`[telegram] Generating self-signed cert for ${host}...`);
+  execSync(
+    `openssl req -newkey rsa:2048 -sha256 -nodes ` +
+    `-keyout "${KEY_FILE}" -x509 -days 3650 ` +
+    `-out "${CERT_FILE}" -subj "/CN=${host}"`,
+    { stdio: 'pipe' }
+  );
+  console.error(`[telegram] Cert saved to ${CERT_DIR}`);
+}
 
 export function startTelegramBot({ onTask } = {}) {
   if (!config.telegramToken) {
@@ -14,12 +42,42 @@ export function startTelegramBot({ onTask } = {}) {
     return null;
   }
 
-  bot = new TelegramBot(config.telegramToken, { polling: true });
+  const host        = process.env.PUBLIC_IP || process.env.PUBLIC_DOMAIN || '';
+  const webhookPort = parseInt(process.env.WEBHOOK_PORT || '8443', 10);
 
-  bot.on('polling_error', err => console.error('[telegram] polling error:', err.message));
+  if (!host) {
+    console.error('[telegram] No PUBLIC_IP set in .env — bot disabled');
+    console.error('[telegram] Add: PUBLIC_IP=<your-droplet-ip>');
+    return null;
+  }
 
-  // ── /start ───────────────────────────────────────────────────────────────
-  bot.onText(/\/start/, async (msg) => {
+  // Auto-generate cert if missing
+  if (!existsSync(CERT_FILE) || !existsSync(KEY_FILE)) {
+    generateSelfSignedCert(host);
+  }
+
+  const cert = readFileSync(CERT_FILE);
+  const key  = readFileSync(KEY_FILE);
+  const webhookUrl = `https://${host}:${webhookPort}`;
+
+  bot = new TelegramBot(config.telegramToken, {
+    webHook: {
+      port: webhookPort,
+      key,
+      cert,
+      autoOpen: true,
+    },
+  });
+
+  // Register webhook with Telegram (sends our cert so Telegram trusts it)
+  bot.setWebHook(`${webhookUrl}/bot${config.telegramToken}`, { certificate: cert })
+    .then(() => console.error(`[telegram] Webhook registered: ${webhookUrl}`))
+    .catch(err => console.error('[telegram] Webhook registration failed:', err.message));
+
+  bot.on('polling_error', err => console.error('[telegram] error:', err.message));
+
+  // ── /start ─────────────────────────────────────────────────────────────
+  bot.onText(/\/start|\/help/, async (msg) => {
     const chatId = msg.chat.id;
     await bot.sendMessage(chatId, [
       '⚡ *AXIS Agent Online*',
@@ -29,122 +87,82 @@ export function startTelegramBot({ onTask } = {}) {
       '*Commands:*',
       '/status — Running tasks',
       '/tasks — Recent task list',
-      '/cancel <id> — Cancel a pending task',
-      '/help — This message',
-    ].join('\n'), { parse_mode: 'Markdown' });
-  });
-
-  bot.onText(/\/help/, async (msg) => {
-    const chatId = msg.chat.id;
-    await bot.sendMessage(chatId, [
-      '⚡ *AXIS Agent Commands*',
-      '',
-      '/status — Show running tasks',
-      '/tasks — List recent 10 tasks',
       '/cancel <id> — Cancel a task',
-      '',
-      'Or just send any message as a task.',
     ].join('\n'), { parse_mode: 'Markdown' });
   });
 
-  // ── /status ──────────────────────────────────────────────────────────────
+  // ── /status ────────────────────────────────────────────────────────────
   bot.onText(/\/status/, async (msg) => {
-    const chatId = msg.chat.id;
+    const { listTasks } = await import('./queue.js');
+    const chatId  = msg.chat.id;
     const running = listTasks().filter(t => t.status === 'running');
-    if (running.length === 0) {
-      await bot.sendMessage(chatId, '✅ No tasks currently running.');
-      return;
-    }
-    const lines = running.map(t =>
-      `🔄 \`${t.id.slice(0, 8)}\` — ${t.prompt.slice(0, 60)}...`
-    );
+    if (!running.length) return bot.sendMessage(chatId, '✅ No tasks running.');
+    const lines = running.map(t => `🔄 \`${t.id.slice(0,8)}\` — ${t.prompt.slice(0,60)}`);
     await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
   });
 
-  // ── /tasks ───────────────────────────────────────────────────────────────
+  // ── /tasks ─────────────────────────────────────────────────────────────
   bot.onText(/\/tasks/, async (msg) => {
+    const { listTasks } = await import('./queue.js');
     const chatId = msg.chat.id;
-    const tasks = listTasks(10);
-    if (tasks.length === 0) {
-      await bot.sendMessage(chatId, 'No tasks yet.');
-      return;
-    }
-    const statusEmoji = { pending: '⏳', running: '🔄', done: '✅', failed: '❌', cancelled: '🚫' };
-    const lines = tasks.map(t =>
-      `${statusEmoji[t.status] || '?'} \`${t.id.slice(0, 8)}\` — ${t.prompt.slice(0, 50)}`
-    );
+    const tasks  = listTasks(10);
+    if (!tasks.length) return bot.sendMessage(chatId, 'No tasks yet.');
+    const emoji  = { pending:'⏳', running:'🔄', done:'✅', failed:'❌', cancelled:'🚫' };
+    const lines  = tasks.map(t => `${emoji[t.status]||'?'} \`${t.id.slice(0,8)}\` — ${t.prompt.slice(0,50)}`);
     await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
   });
 
-  // ── /cancel ──────────────────────────────────────────────────────────────
+  // ── /cancel ────────────────────────────────────────────────────────────
   bot.onText(/\/cancel (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
+    const { listTasks, cancelTask } = await import('./queue.js');
+    const chatId   = msg.chat.id;
     const idPrefix = match[1].trim();
-    const tasks = listTasks();
-    const task = tasks.find(t => t.id.startsWith(idPrefix));
-    if (!task) {
-      await bot.sendMessage(chatId, `Task not found: ${idPrefix}`);
-      return;
-    }
+    const task     = listTasks().find(t => t.id.startsWith(idPrefix));
+    if (!task) return bot.sendMessage(chatId, `Not found: ${idPrefix}`);
     const ok = cancelTask(task.id);
-    await bot.sendMessage(chatId, ok ? `🚫 Cancelled: ${task.id.slice(0, 8)}` : `Cannot cancel: task is running`);
+    await bot.sendMessage(chatId, ok ? `🚫 Cancelled: \`${task.id.slice(0,8)}\`` : `Cannot cancel: task is running`, { parse_mode: 'Markdown' });
   });
 
-  // ── any other message → new task ─────────────────────────────────────────
+  // ── any message → new task ─────────────────────────────────────────────
   bot.on('message', async (msg) => {
     if (msg.text?.startsWith('/')) return;
+    const { addTask } = await import('./queue.js');
     const chatId = msg.chat.id;
-
-    // Save chat ID for result delivery
-    if (!config.telegramChatId) config.telegramChatId = String(chatId);
-
     const prompt = msg.text || msg.caption || '';
     if (!prompt.trim()) return;
 
-    const task = addTask(prompt, 'telegram');
+    if (!config.telegramChatId) config.telegramChatId = String(chatId);
 
+    const task = addTask(prompt, 'telegram');
     await bot.sendMessage(
       chatId,
-      `⚡ Task queued\n\`${task.id.slice(0, 8)}\`\n\n_${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}_`,
+      `⚡ Task queued \`${task.id.slice(0,8)}\`\n\n_${prompt.slice(0,100)}${prompt.length > 100 ? '...' : ''}_`,
       { parse_mode: 'Markdown' }
     );
-
     if (onTask) onTask(task, chatId);
   });
 
-  console.error('[telegram] Bot started');
+  console.error('[telegram] Webhook bot started');
   return bot;
 }
 
 export async function sendResult(chatId, task) {
   if (!bot || !chatId) return;
-
-  const statusEmoji = { done: '✅', failed: '❌' };
-  const emoji = statusEmoji[task.status] || '?';
-
-  const header = `${emoji} Task \`${task.id.slice(0, 8)}\` complete`;
+  const emoji  = { done: '✅', failed: '❌' };
+  const header = `${emoji[task.status] || '?'} Task \`${task.id.slice(0,8)}\` complete`;
 
   if (task.status === 'failed') {
-    await bot.sendMessage(chatId, `${header}\n\nError: ${task.error}`, { parse_mode: 'Markdown' });
-    return;
+    return bot.sendMessage(chatId, `${header}\n\nError: ${task.error}`, { parse_mode: 'Markdown' });
   }
 
   const result = task.result || '(no output)';
-
-  // Telegram max message length is 4096 chars
   if (result.length <= 3800) {
     await bot.sendMessage(chatId, `${header}\n\n${result}`, { parse_mode: 'Markdown' });
   } else {
-    // Send as file
-    await bot.sendMessage(chatId, `${header} (long output — sending as file)`);
-    const buffer = Buffer.from(result, 'utf8');
-    await bot.sendDocument(chatId, buffer, {}, {
-      filename: `result-${task.id.slice(0, 8)}.txt`,
-      contentType: 'text/plain',
-    });
+    await bot.sendMessage(chatId, `${header} — sending as file`);
+    const buf = Buffer.from(result, 'utf8');
+    await bot.sendDocument(chatId, buf, {}, { filename: `result-${task.id.slice(0,8)}.txt`, contentType: 'text/plain' });
   }
 }
 
-export function getBot() {
-  return bot;
-}
+export function getBot() { return bot; }
