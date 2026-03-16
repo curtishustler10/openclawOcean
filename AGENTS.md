@@ -47,3 +47,29 @@
 - If any tool fails (browser, API, Claude Code) → report what failed and what Curt needs to do
 - Never silently try a different approach
 - Never substitute browser for API or vice versa
+
+## AXIS Agent Server (autonomous mode)
+
+When running as the server agent (`agent/server.js`), the following applies:
+
+### Task Routing
+Tasks are auto-classified and routed by `agent/router.js`:
+- **admin / conversational** → cheap model (claude-haiku or alt provider via CHEAP_MODEL)
+- **coding / debugging** → Claude Code CLI (`claude --dangerously-skip-permissions -p "..."`)
+- **complex reasoning** → claude-sonnet-4-6
+
+### MCP Tools
+All tool calls go through MCP servers in `agent/mcp/`:
+- `shell` — bash_exec, read_file, write_file, list_dir, delete_path, move_path
+- `browser` — browser_goto, browser_screenshot, browser_click, browser_type, browser_get_text, browser_evaluate
+- `memory` — memory_read, memory_write, memory_append, memory_list, memory_log_session
+
+### Endpoints
+- `POST /task` — submit a task `{ prompt: string }`
+- `GET /task/:id` — check status
+- `GET /tasks` — list recent tasks
+- `DELETE /task/:id` — cancel a pending task
+
+### Telegram
+- Submit tasks: send any message to @Openclaw88axisbot
+- `/status`, `/tasks`, `/cancel <id>` commands available
