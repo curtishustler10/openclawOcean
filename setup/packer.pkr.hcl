@@ -74,12 +74,25 @@ build {
   name    = "axis-agent"
   sources = ["source.digitalocean.axis_agent"]
 
-  # ── 1. System update + base dependencies ───────────────────────────────────
+  # ── 1. Wait for cloud-init + kill apt lock, then install deps ──────────────
   provisioner "shell" {
     inline = [
+      # Wait for cloud-init to finish (it holds apt lock on fresh droplets)
+      "cloud-init status --wait || true",
+
+      # Kill unattended-upgrades — it runs on boot and holds the dpkg lock
+      "systemctl stop unattended-upgrades || true",
+      "systemctl disable unattended-upgrades || true",
+      "systemctl stop apt-daily.service apt-daily-upgrade.service || true",
+      "systemctl disable apt-daily.timer apt-daily-upgrade.timer || true",
+
+      # Wait until dpkg lock is fully released
+      "while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do echo 'waiting for dpkg lock...'; sleep 3; done",
+      "while fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo 'waiting for apt lock...'; sleep 3; done",
+
+      # Now safe to run apt
       "export DEBIAN_FRONTEND=noninteractive",
       "apt-get update -qq",
-      "apt-get upgrade -y -qq",
       "apt-get install -y -qq git curl wget ca-certificates gnupg build-essential python3 python3-pip",
 
       # Chromium + Playwright deps
