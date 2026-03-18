@@ -11,7 +11,7 @@
  */
 
 import TelegramBot from 'node-telegram-bot-api';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, createReadStream } from 'fs';
 import { execSync } from 'child_process';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -69,7 +69,7 @@ export function startTelegramBot({ onTask } = {}) {
   });
 
   // Register webhook with Telegram (sends our cert so Telegram trusts it)
-  bot.setWebHook(`${webhookUrl}/bot${config.telegramToken}`, { certificate: CERT_FILE })
+  bot.setWebHook(`${webhookUrl}/bot${config.telegramToken}`, { certificate: createReadStream(CERT_FILE) })
     .then(() => console.error(`[telegram] Webhook registered: ${webhookUrl}`))
     .catch(err => console.error('[telegram] Webhook registration failed:', err.message));
 
