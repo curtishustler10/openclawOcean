@@ -11,11 +11,11 @@
  */
 
 import TelegramBot from 'node-telegram-bot-api';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { config } from './config.js';
+import { config, WORKSPACE_DIR } from './config.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const CERT_DIR = join(__dirname, 'certs');
@@ -144,10 +144,49 @@ export function startTelegramBot({ onTask } = {}) {
     if (msg.text?.startsWith('/')) return;
     const { addTask } = await import('./queue.js');
     const chatId = msg.chat.id;
-    const prompt = msg.text || msg.caption || '';
-    if (!prompt.trim()) return;
 
     if (!config.telegramChatId) config.telegramChatId = String(chatId);
+
+    // Download attached file (document, photo, audio, video, voice)
+    let filePath = null;
+    const fileObj = msg.document || msg.audio || msg.video || msg.voice || msg.video_note || null;
+    const photo   = msg.photo ? msg.photo[msg.photo.length - 1] : null; // highest-res
+    const fileId  = fileObj?.file_id || photo?.file_id || null;
+
+    if (fileId) {
+      try {
+        // Get file path from Telegram
+        const fileInfo = JSON.parse(execSync(
+          `curl -s "https://api.telegram.org/bot${config.telegramToken}/getFile?file_id=${fileId}"`,
+          { encoding: 'utf8', timeout: 15000 }
+        ));
+        if (fileInfo.ok && fileInfo.result.file_path) {
+          const remotePath = fileInfo.result.file_path;
+          const fileName   = fileObj?.file_name || remotePath.split('/').pop();
+          const uploadsDir = join(WORKSPACE_DIR, 'uploads');
+          mkdirSync(uploadsDir, { recursive: true });
+          // Prefix with timestamp to avoid collisions
+          const localName = `${Date.now()}-${fileName}`;
+          filePath = join(uploadsDir, localName);
+          execSync(
+            `curl -s -o "${filePath}" "https://api.telegram.org/file/bot${config.telegramToken}/${remotePath}"`,
+            { timeout: 30000 }
+          );
+          console.error(`[telegram] Downloaded file: ${filePath}`);
+        }
+      } catch (err) {
+        console.error('[telegram] File download failed:', err.message);
+      }
+    }
+
+    // Build prompt from caption/text + file reference
+    let prompt = msg.text || msg.caption || '';
+    if (filePath && !prompt.trim()) {
+      prompt = `Process the attached file: ${filePath}`;
+    } else if (filePath) {
+      prompt = `${prompt}\n\n[Attached file: ${filePath}]`;
+    }
+    if (!prompt.trim()) return;
 
     const task = addTask(prompt, 'telegram');
     await bot.sendMessage(

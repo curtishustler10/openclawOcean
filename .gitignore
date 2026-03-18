@@ -11,6 +11,9 @@ agent/certs/
 # Queue state (runtime)
 agent/queue.json
 
+# Uploaded files from Telegram
+uploads/
+
 # Secrets
 **/*.pem
 **/*.key
