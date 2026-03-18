@@ -66,6 +66,9 @@ export function startTelegramBot({ onTask } = {}) {
       cert: CERT_FILE,
       autoOpen: true,
     },
+    request: {
+      family: 4,  // Force IPv4 — Node 20 tries IPv6 first, fails on most VPS
+    },
   });
 
   // Register webhook with Telegram via curl (node-telegram-bot-api's file
