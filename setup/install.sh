@@ -125,6 +125,7 @@ if command -v ufw &>/dev/null; then
   log "Configuring firewall..."
   ufw allow ssh
   ufw allow 3000/tcp comment 'AXIS agent API'
+  ufw allow 8443/tcp comment 'Telegram webhook'
   ufw --force enable
 fi
 

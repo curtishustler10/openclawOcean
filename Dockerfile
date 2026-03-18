@@ -49,7 +49,7 @@ RUN cp -r /app-deps/node_modules /app/node_modules
 
 WORKDIR /app
 
-EXPOSE 3000
+EXPOSE 3000 8443
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

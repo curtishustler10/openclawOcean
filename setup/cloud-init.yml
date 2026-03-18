@@ -112,6 +112,7 @@ runcmd:
   # Firewall
   - ufw allow ssh
   - ufw allow 3000/tcp
+  - ufw allow 8443/tcp
   - ufw --force enable
 
   # Done marker
