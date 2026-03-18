@@ -11,7 +11,7 @@
  */
 
 import TelegramBot from 'node-telegram-bot-api';
-import { existsSync, mkdirSync, createReadStream } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -68,10 +68,24 @@ export function startTelegramBot({ onTask } = {}) {
     },
   });
 
-  // Register webhook with Telegram (sends our cert so Telegram trusts it)
-  bot.setWebHook(`${webhookUrl}/bot${config.telegramToken}`, { certificate: createReadStream(CERT_FILE) })
-    .then(() => console.error(`[telegram] Webhook registered: ${webhookUrl}`))
-    .catch(err => console.error('[telegram] Webhook registration failed:', err.message));
+  // Register webhook with Telegram via curl (node-telegram-bot-api's file
+  // handling is unreliable for self-signed PEM certs)
+  try {
+    const result = execSync(
+      `curl -s -F "url=${webhookUrl}/bot${config.telegramToken}" ` +
+      `-F "certificate=@${CERT_FILE}" ` +
+      `https://api.telegram.org/bot${config.telegramToken}/setWebhook`,
+      { encoding: 'utf8', timeout: 15000 }
+    );
+    const json = JSON.parse(result);
+    if (json.ok) {
+      console.error(`[telegram] Webhook registered: ${webhookUrl}`);
+    } else {
+      console.error(`[telegram] Webhook registration failed: ${json.description}`);
+    }
+  } catch (err) {
+    console.error('[telegram] Webhook registration failed:', err.message);
+  }
 
   bot.on('polling_error', err => console.error('[telegram] error:', err.message));
 
