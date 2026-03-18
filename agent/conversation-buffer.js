@@ -12,7 +12,7 @@ import { WORKSPACE_DIR } from './config.js';
 
 const BUFFER_PATH = join(WORKSPACE_DIR, 'memory', 'conversation-buffer.json');
 const MAX_ENTRIES = 5;
-const MAX_RESULT_LENGTH = 500; // truncate long results to save tokens
+const MAX_RESULT_LENGTH = 4000; // match Telegram's message limit
 
 function load() {
   try {
@@ -60,7 +60,7 @@ export function recordExchange(prompt, result) {
   }
 
   entries.push({
-    prompt: prompt.slice(0, 300), // cap prompt length too
+    prompt: prompt.slice(0, 4000),
     result: trimmedResult,
     timestamp: new Date().toISOString().slice(0, 16).replace('T', ' '),
   });
