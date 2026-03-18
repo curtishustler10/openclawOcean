@@ -3,6 +3,15 @@
  * REST API + Telegram bot + task worker
  */
 
+// Force IPv4-first DNS — Node 20 defaults to IPv6 which fails on many VPS
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
+
+// Prevent unhandled rejections from crashing the process (e.g. Telegram API network errors)
+process.on('unhandledRejection', (err) => {
+  console.error('[axis] Unhandled rejection:', err?.message || err);
+});
+
 import express from 'express';
 import { config } from './config.js';
 import { addTask, getTask, listTasks, updateTask, getNextPending } from './queue.js';
