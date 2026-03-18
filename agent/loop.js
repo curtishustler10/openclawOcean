@@ -12,6 +12,7 @@ import { config, buildSystemPrompt, WORKSPACE_DIR } from './config.js';
 import { McpClientManager } from './mcp-client.js';
 import { updateTask } from './queue.js';
 import { classifyTask, getModelConfig, runWithClaudeCode } from './router.js';
+import { getRecentContext, recordExchange } from './conversation-buffer.js';
 
 export async function runTask(task, { onStep } = {}) {
   // ── 1. Classify task and select model tier ──────────────────────────────
@@ -30,10 +31,12 @@ export async function runTask(task, { onStep } = {}) {
         result: ok ? result : null,
         error: ok ? null : error,
       });
+      recordExchange(task.prompt, ok ? result : `Error: ${error}`);
       if (onStep) await onStep({ iteration: 1, text: result || error, stopReason: 'end_turn' });
       return ok ? { ok: true, result } : { ok: false, error };
     } catch (err) {
       updateTask(task.id, { status: 'failed', error: err.message });
+      recordExchange(task.prompt, `Error: ${err.message}`);
       return { ok: false, error: err.message };
     }
   }
@@ -53,7 +56,8 @@ export async function runTask(task, { onStep } = {}) {
   await mcp.connect(serversToLoad);
 
   const tools = mcp.getAnthropicTools().map(({ _server, ...tool }) => tool);
-  const systemPrompt = buildSystemPrompt();
+  const recentContext = getRecentContext();
+  const systemPrompt = buildSystemPrompt() + (recentContext ? '\n\n' + recentContext : '');
 
   const messages = [{ role: 'user', content: task.prompt }];
   let iterations = 0;
@@ -120,11 +124,13 @@ export async function runTask(task, { onStep } = {}) {
     if (!finalResult) finalResult = `Max iterations (${config.maxIterations}) reached.`;
 
     updateTask(task.id, { status: 'done', result: finalResult, messages });
+    recordExchange(task.prompt, finalResult);
     return { ok: true, result: finalResult };
 
   } catch (err) {
     console.error(`[loop] Error:`, err);
     updateTask(task.id, { status: 'failed', error: err.message, messages });
+    recordExchange(task.prompt, `Error: ${err.message}`);
     return { ok: false, error: err.message };
   } finally {
     await mcp.disconnect();
